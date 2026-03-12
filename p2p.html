@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>极简 P2P 聊天</title>
+<style>
+body{max-width:600px;margin:20px auto;padding:0 20px;font-family:system-ui}
+#log{height:300px;border:1px solid #ddd;padding:10px;overflow-y:auto;margin:10px 0}
+textarea{width:100%;height:80px;margin:5px 0}
+button{padding:6px 12px}
+</style>
+</head>
+<body>
+<h3>极简 P2P 聊天（可iPhone/iPad/电脑互通）</h3>
+
+<div>
+  <button onclick="createOffer()">发起连接（Offer）</button>
+  <button onclick="answerOffer()">回应连接（Answer）</button>
+  <button onclick="setAnswer()">确认Answer（发起方点这个）</button>
+  <button onclick="clearLog()">清空</button>
+</div>
+
+<textarea id="offer" placeholder="Offer 内容"></textarea>
+<textarea id="answer" placeholder="Answer 内容"></textarea>
+
+<div id="log"></div>
+
+<input id="msg" placeholder="输入消息" style="width:70%">
+<button onclick="sendMsg()">发送</button>
+
+<script>
+let pc, dc;
+const ice = { iceServers: [{urls:'stun:stun.cloudflare.com:3478'}] };
+// 修复：定义 logDom 变量（绑定页面的 log 容器）
+const logDom = document.getElementById('log');
+
+// 日志函数
+function log(text) {
+  logDom.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${text}</div>`;
+  logDom.scrollTop = logDom.scrollHeight;
+}
+
+// Safari WebRTC 兼容
+window.RTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+window.RTCSessionDescription = window.RTCSessionDescription || window.webkitRTCSessionDescription;
+window.RTCIceCandidate = window.RTCIceCandidate || window.webkitRTCIceCandidate;
+
+// 1. 发起方创建 Offer
+async function createOffer() {
+  try {
+    // 清空旧连接
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(ice);
+    
+    // 创建数据通道
+    dc = pc.createDataChannel("chat");
+    bindDC();
+
+    // 收集 ICE 候选，完成后填充到 Offer 框
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) {
+        document.getElementById('offer').value = JSON.stringify(pc.localDescription);
+        log("✅ 已生成 Offer，请复制给对方");
+      }
+    };
+
+    // 创建并设置本地 Offer
+    const offerSDP = await pc.createOffer({
+      offerToReceiveAudio: false,
+      offerToReceiveVideo: false
+    });
+    await pc.setLocalDescription(offerSDP);
+    log("正在生成 Offer...");
+  } catch (e) {
+    log(`❌ 创建 Offer 失败：${e.message}`);
+    console.error(e);
+  }
+}
+
+// 2. 回应方处理 Offer 并生成 Answer
+async function answerOffer() {
+  try {
+    // 清空旧连接
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(ice);
+
+    // 监听发起方的数据通道
+    pc.ondatachannel = (e) => {
+      dc = e.channel;
+      bindDC();
+      log("✅ 检测到发起方的数据通道");
+    };
+
+    // 收集 ICE 候选，完成后填充到 Answer 框
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) {
+        document.getElementById('answer').value = JSON.stringify(pc.localDescription);
+        log("✅ 已生成 Answer，请复制给发起方");
+      }
+    };
+
+    // 读取 Offer 框内容并设置为远端描述
+    const offerText = document.getElementById('offer').value.trim();
+    if (!offerText) {
+      log("❌ 请先粘贴发起方的 Offer 内容");
+      return;
+    }
+    const offerSDP = JSON.parse(offerText);
+    await pc.setRemoteDescription(new RTCSessionDescription(offerSDP));
+
+    // 创建并设置本地 Answer
+    const answerSDP = await pc.createAnswer();
+    await pc.setLocalDescription(answerSDP);
+    log("正在生成 Answer...");
+  } catch (e) {
+    log(`❌ 创建 Answer 失败：${e.message}`);
+    console.error(e);
+  }
+}
+
+// 3. 发起方确认 Answer（新增按钮，不用再输控制台）
+async function setAnswer() {
+  try {
+    if (!pc) {
+      log("❌ 请先点击「发起连接」创建 Offer");
+      return;
+    }
+    // 读取 Answer 框内容
+    const answerText = document.getElementById('answer').value.trim();
+    if (!answerText) {
+      log("❌ 请先粘贴回应方的 Answer 内容");
+      return;
+    }
+    const answerSDP = JSON.parse(answerText);
+    await pc.setRemoteDescription(new RTCSessionDescription(answerSDP));
+    log("✅ 已确认 Answer，等待 P2P 连接建立...");
+  } catch (e) {
+    log(`❌ 确认 Answer 失败：${e.message}`);
+    console.error(e);
+  }
+}
+
+// 绑定数据通道事件（收发消息）
+function bindDC() {
+  dc.onopen = () => {
+    log("🎉 P2P 通道已打开！可以开始聊天");
+  };
+  dc.onmessage = (e) => {
+    log(`💬 对方：${e.data}`);
+  };
+  dc.onclose = () => {
+    log("❌ P2P 通道已关闭");
+  };
+  dc.onerror = (e) => {
+    log(`❌ 数据通道错误：${e.message}`);
+  };
+}
+
+// 发送消息
+function sendMsg() {
+  const msgInput = document.getElementById('msg');
+  const text = msgInput.value.trim();
+  if (!text) {
+    log("❌ 消息不能为空");
+    return;
+  }
+  if (!dc || dc.readyState !== "open") {
+    log("❌ 通道未打开，无法发送消息");
+    return;
+  }
+  dc.send(text);
+  log(`💬 我：${text}`);
+  msgInput.value = "";
+}
+
+// 清空日志
+function clearLog() {
+  logDom.innerHTML = '';
+}
+</script>
+</body>
+</html>
